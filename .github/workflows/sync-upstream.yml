@@ -48,7 +48,30 @@ jobs:
           if git merge-base --is-ancestor upstream/main HEAD; then
             echo "main already contains upstream/main"
           else
-            git merge --no-edit upstream/main -m "Sync upstream main [skip ci]"
+            # The Actions token cannot create or update .github/workflows.
+            # Keep the fork's workflow files and sync the rest of the tree.
+            workflow_backup="$(mktemp -d)"
+            cp -a .github/workflows "${workflow_backup}/workflows"
+            merge_status=0
+            git merge --no-commit --no-ff upstream/main || merge_status=$?
+            if [ "${merge_status}" -gt 1 ]; then
+              echo "git merge failed"
+              exit "${merge_status}"
+            fi
+            rm -rf .github/workflows
+            mkdir -p .github
+            cp -a "${workflow_backup}/workflows" .github/workflows
+            git add -A -- .github/workflows
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "Merge conflicts remain outside workflow files:"
+              git diff --name-only --diff-filter=U
+              exit 1
+            fi
+            if git diff --cached --quiet && git diff --quiet; then
+              git commit --allow-empty -m "Sync upstream main [skip ci]"
+            else
+              git commit -m "Sync upstream main [skip ci]"
+            fi
             git push origin main
           fi
 
@@ -62,5 +85,5 @@ jobs:
               [ "${branch}" = "main" ] && continue
               echo "Updating ${branch}"
               git push origin "refs/remotes/upstream/${branch}:refs/heads/${branch}" \
-                || echo "Left ${branch} unchanged because it is not a fast-forward."
+                || echo "Left ${branch} unchanged."
             done
