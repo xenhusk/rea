@@ -23,6 +23,14 @@ artifact digest and structural graph ID. Semantic tracing requires the semantic
 relation graph and reports when it is unavailable rather than treating missing
 data as an empty graph.
 
+Explicit TypeScript `import type` and `export type` declarations remain source
+facts and do not create runtime import or export relationships. Type export names
+are reported separately from value export names. Inline `type` specifiers can
+leave an empty import or re-export with side effects under
+[`verbatimModuleSyntax`](https://www.typescriptlang.org/tsconfig/verbatimModuleSyntax.html);
+REA retains those dependency candidates and reports the unavailable compiler
+options rather than assuming the dependency is erased.
+
 The semantic graph wire format stores shared non-location provenance once in
 its required `evidence_contexts` table. Each node, relation, fingerprint, and
 unknown retains its exact `evidence.location` and names the owning context with
@@ -52,6 +60,8 @@ provider implicitly.
 `trace_javascript_semantics` queries the authenticated companion graph without
 rereading mutable files. A seed may identify a semantic or application node,
 literal, function fingerprint, property, endpoint, event, or boundary field.
+For a recovered parse, coercion, or validation boundary, its field value is the
+static operation's method name (for example, `Number`).
 The query declares backward provenance, forward influence, callers, or
 ownership and can restrict admitted relation kinds. REA returns every matching
 seed and the complete reachable subgraph; callers do not choose node, relation,
@@ -75,10 +85,22 @@ callee bodies and built-ins such as `Object.assign`, `Reflect.set`, and
 values. This uncertainty does not prove that a call actually mutated a value.
 Interprocedural aliasing beyond the supported call-site references remains
 outside this mutation pass.
+For process configuration, only known environment value slots and canonical
+argument indexes are treated as primitive when passed to calls. Unknown or
+inherited selections can expose a mutable prototype, so later reads of that
+configuration container retain uncertainty; earlier top-level reads and unrelated
+configuration containers remain independent.
 
 Function fingerprints commit normalized syntax, control-flow shape, relation
 shape, literal sets, arity, and detected effects without using local names or
-source offsets. Equal duplicate fingerprints remain ambiguous. Dynamic
+source offsets. Function-local directive literals contribute their values while
+preserving escape spelling: `"use\x20strict"` differs from `"use strict"`.
+Quote style, formatting, and local names remain normalized. Equal duplicate
+fingerprints remain ambiguous.
+Fingerprints are static candidates, not behavioral-equivalence proofs or a
+version-independent identity. Re-analyze affected sources and obtain new seeds
+after analyzer corrections; previously retained Evidence remains queryable using
+its original component commitments. Dynamic
 calls/properties/names, parser recovery, unresolved handles, and unsupported API
 shapes stay explicit unknowns; a missing relation is never reported as proven
 behavioral absence.
@@ -156,9 +178,12 @@ to the comparison Evidence in a live session.
 `compare_source_to_bundle` compares one cryptographically committed
 `HistoricalSourceGraph` with authenticated application-graph Evidence. The
 stable scoring model reports every admitted signal and weight: exact source
-digest, source-map original path, exact current path, path suffix, basename, and
-language extension. Exact digest wins over location inference; weak basename
-or extension evidence never forces a mapping.
+digest, source-map original path, exact current path, path suffix, Unicode-
+equivalent path, basename, and language extension. Exact digest wins over
+location inference; weak basename, extension, and Unicode-equivalence evidence
+never forces a mapping. Unicode-equivalent spellings are candidate evidence
+only because distinct filesystem paths can preserve those spellings as separate
+files; multiple canonical-equivalent candidates remain unknown.
 
 Each historical source file is classified as `unchanged`, `modified`,
 `removed`, `split`, `merged`, `duplicated`, or `unknown`. Multiple equally
@@ -197,6 +222,25 @@ arrays, and later explicit data properties and methods replace earlier object
 spread references. A known array prefix does not expose values from a following
 spread. Accessors, custom or uncertain iteration, unknown computed keys, and
 unknown spread lengths retain conservative uncertainty.
+Getter-local aliases of `this`, including direct destructuring and assignments,
+retain their receiver when a returned shared reference is written. These writes
+invalidate the earlier literal instead of claiming the getter executed or the
+new value is known. Straight-line alias reads retain their capture order;
+uncertain control flow remains conservative. A binding outside the getter or
+`this` in a nested ordinary function is not attributed to the getter's receiver.
+Private reads keep receiver projections separate from the private value's path.
+Receiver projections follow known data fields initialized from `this` or earlier
+self-referencing fields; static fields retain their declaring class identity.
+An alias cycle that repeatedly selects deeper children retains escape uncertainty
+at its recovered roots rather than claiming a fixed number of loop iterations.
+
+Writes through an object getter's returned receiver retain that uncertainty
+when the object is an array element, nested inside mixed object/array
+containers, or assigned to a previously declared identifier. Saving the getter
+result in an alias does not make its old field values immutable. Known array
+indices include holes; an element after a spread has only a minimum possible
+index. Unrelated properties and known array prefixes remain precise, and a
+getter read without a write does not invalidate the receiver's fields.
 Nested callable returns are not assigned to their parent callable. Projected
 graph observations carry source ranges but never source text.
 

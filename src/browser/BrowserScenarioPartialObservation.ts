@@ -90,8 +90,9 @@ export const browserScenarioCaptureData = (input: {
         .sort(),
       network_content: input.scenario.capture.network,
       event_families: [...new Set(input.scenario.capture.events)].sort(),
+      limits: input.scenario.capture.limits,
     },
-    duration_ms: Date.now() - input.startedAt,
+    duration_ms: Math.max(0, Math.round(performance.now() - input.startedAt)),
     steps: [...input.steps],
     events,
     limitations: [

@@ -9,17 +9,21 @@ export type ParsedJavaScriptSource = ReturnType<typeof parse>;
  *
  * - `dts:true` only for `.d.ts/.d.mts/.d.cts` ambient declarations;
  *   ordinary `.ts` keeps the missing-initializer diagnostic.
- * - JSX enabled for `.tsx`, `.jsx`, `.js`, and unknown paths; disabled for
- *   plain `.ts/.cts/.mts` (angle-bracket assertions, not JSX) and for all
+ * - `.js/.jsx/.mjs/.cjs` use JavaScript grammar with JSX. TypeScript reads
+ *   some valid JavaScript differently (`c?x=>(a):y=>(b)` as a return type,
+ *   `a<b>(c)` as a generic call), so it must not select their meaning.
+ * - JSX enabled for `.tsx` and unknown paths; disabled for plain
+ *   `.ts/.cts/.mts` (angle-bracket assertions, not JSX) and for all
  *   declaration files. `.mts` (including `.d.mts`) sets
  *   `disallowAmbiguousJSXLike`, matching tsc's `.mts` mode.
  * - `decorators-legacy` always present: without it decorated sources fail
  *   hard instead of reporting recovered syntax, losing every derived fact.
- * - Unknown paths retain the existing JSX-capable contract (best-effort
- *   parse; failures surface via `errorRecovery`, never silent misparse).
+ * - Unknown paths retain the existing JSX- and TypeScript-capable contract
+ *   (best-effort parse; failures surface via `errorRecovery`).
  */
 export const parserPluginsForPath = (sourcePath?: string): ParserPlugin[] => {
   const path = sourcePath ?? "";
+  if (/\.(?:js|jsx|mjs|cjs)$/iu.test(path)) return ["decorators-legacy", "jsx"];
   const dts = /\.d\.(?:ts|mts|cts)$/iu.test(path);
   const isTsLike = /\.(?:ts|cts|mts)$/iu.test(path);
   const isTsx = /\.tsx$/iu.test(path);
@@ -37,9 +41,18 @@ export const parserPluginsForPath = (sourcePath?: string): ParserPlugin[] => {
     : ["decorators-legacy", typescript];
 };
 
-/** `.mjs` and `.mts` are modules by extension; other paths leave the mode to syntax. */
+/** `.mjs` and `.mts` explicitly select module mode. */
 export const isExplicitModuleSourcePath = (path?: string): boolean =>
   /\.m[jt]s$/iu.test(path ?? "");
+
+const runtimeSourceTypeForPath = (
+  path?: string,
+): "commonjs" | "module" | "unambiguous" =>
+  /\.cjs$/iu.test(path ?? "")
+    ? "commonjs"
+    : isExplicitModuleSourcePath(path)
+      ? "module"
+      : "unambiguous";
 
 export interface RecoveredJavaScriptParse {
   readonly file: ParsedJavaScriptSource;
@@ -58,25 +71,25 @@ export const parseRecoveredJavaScript = (
   sourcePath: string | undefined,
   options: Omit<ParserOptions, "sourceType" | "errorRecovery">,
 ): RecoveredJavaScriptParse => {
-  // `.cjs` is CommonJS by extension, so module-only errors cannot apply.
-  if (/\.cjs$/iu.test(sourcePath ?? ""))
+  const sourceType = runtimeSourceTypeForPath(sourcePath);
+  if (sourceType !== "unambiguous") {
+    const normalizedOptions = { ...options };
+    if (sourceType === "commonjs") {
+      // Babel owns these wrapper semantics in CommonJS mode and rejects
+      // explicit script overrides, including the reference-import options.
+      delete normalizedOptions.allowAwaitOutsideFunction;
+      delete normalizedOptions.allowReturnOutsideFunction;
+      delete normalizedOptions.allowNewTargetOutsideFunction;
+    }
     return {
       file: parse(source, {
-        ...options,
-        sourceType: "script",
+        ...normalizedOptions,
+        sourceType,
         errorRecovery: true,
       }),
       moduleOnlyErrors: [],
     };
-  if (isExplicitModuleSourcePath(sourcePath))
-    return {
-      file: parse(source, {
-        ...options,
-        sourceType: "module",
-        errorRecovery: true,
-      }),
-      moduleOnlyErrors: [],
-    };
+  }
   const file = parse(source, {
     ...options,
     sourceType: "unambiguous",
@@ -98,18 +111,34 @@ export const parseRecoveredJavaScript = (
   };
 };
 
-/** Parse JavaScript or TypeScript once without attaching comments to AST nodes. */
+/** Parse inert JavaScript or TypeScript facts without attaching comments to AST nodes. */
 export const parseJavaScriptSource = (
   source: string,
   sourcePath?: string,
 ): ParsedJavaScriptSource | null => {
   try {
-    return parse(source, {
-      sourceType: "unambiguous",
+    const runtimeSourceType = runtimeSourceTypeForPath(sourcePath);
+    const commonjs = runtimeSourceType === "commonjs";
+    const options = {
       errorRecovery: true,
       attachComment: false,
       plugins: parserPluginsForPath(sourcePath),
+    };
+    const file = parse(source, {
+      ...options,
+      // Inert artifact analysis retains module declarations even in .cjs assets.
+      // Infer their syntax here; reference imports keep filename-mode diagnostics.
+      sourceType: commonjs ? "unambiguous" : runtimeSourceType,
+      allowReturnOutsideFunction: commonjs,
+      allowNewTargetOutsideFunction: commonjs,
     });
+    // Unambiguous mode retains module-only diagnostics after choosing a script.
+    // The .cjs extension establishes wrapper mode, so obtain its own diagnostics.
+    return commonjs &&
+      file.program.sourceType === "script" &&
+      file.errors.length > 0
+      ? parse(source, { ...options, sourceType: "commonjs" })
+      : file;
   } catch (cause: unknown) {
     // Unparseable source is represented by the null return.
     void cause;

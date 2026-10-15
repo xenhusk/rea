@@ -145,15 +145,16 @@ class FakeSession implements BrowserScenarioSessionPort {
     return 0;
   }
 
-  events(): {
-    readonly retained: number;
-    readonly dropped: number;
-    readonly items: readonly BrowserScenarioEvent[];
-  } {
+  events(): ReturnType<BrowserScenarioSessionPort["events"]> {
     return {
       retained: this.eventItems.length,
       dropped: 0,
       items: this.eventItems,
+      omissions: {
+        by_kind: [],
+        network_transactions: [],
+        network_transaction_range: null,
+      },
     };
   }
 
@@ -303,6 +304,7 @@ describe("PlaywrightBrowserScenarioProvider", () => {
     });
     expect(result.value.limitations).toContain(session.eventGaps[0]);
   });
+
   it("returns an initial state and every step beyond the former action ceiling", async () => {
     const session = new FakeSession("launch");
     const provider = new PlaywrightBrowserScenarioProvider(() =>
@@ -373,6 +375,35 @@ describe("PlaywrightBrowserScenarioProvider", () => {
       missing_sections: ["events"],
     });
     expect(session.closeCalls).toBe(1);
+  });
+});
+
+describe("PlaywrightBrowserScenarioProvider timing", () => {
+  it("keeps capture elapsed values valid across a backward wall-clock jump", async () => {
+    let wallClock = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => wallClock);
+    const session = new FakeSession("launch");
+    session.onPerform = () => {
+      wallClock = 1;
+    };
+    const provider = new PlaywrightBrowserScenarioProvider(() =>
+      Promise.resolve(session),
+    );
+
+    try {
+      const result = await provider.captureScenario(scenario());
+      if (!result.ok) throw result.error;
+      expect(wallClock).toBe(1);
+      expect(Number.isInteger(result.value.duration_ms)).toBe(true);
+      expect(result.value.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(
+        result.value.steps.every(
+          ({ elapsed_ms }) => Number.isInteger(elapsed_ms) && elapsed_ms >= 0,
+        ),
+      ).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
 
@@ -529,9 +560,16 @@ describe("PlaywrightBrowserScenarioProvider operation failures", () => {
               },
               steps: [{ step_id: "scenario_start" }],
               events: {
+                retained: 1,
+                dropped: 0,
                 items: [
                   expect.objectContaining({ text: "navigation started" }),
                 ],
+                omissions: {
+                  by_kind: [],
+                  network_transactions: [],
+                  network_transaction_range: null,
+                },
               },
             },
           },

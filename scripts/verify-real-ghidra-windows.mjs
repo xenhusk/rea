@@ -27,7 +27,11 @@ import {
 } from "../dist/ghidra/GhidraSessionValues.js";
 import { parseBinaryTarget } from "../dist/application/BinaryTargetResolver.js";
 import { completeVerifierRun, createVerifierRun } from "./lib/verifier-run.mjs";
+import { resolveGhidraVerifierTimeouts } from "./lib/ghidra-verifier-timeouts.mjs";
 import { verifyGhidraCompactReferences } from "./lib/real-ghidra-compact-references.mjs";
+import { verifyGhidraBorlandSeh } from "./lib/real-ghidra-borland-seh.mjs";
+import { verifyGhidraFileOffsets } from "./lib/real-ghidra-file-offsets.mjs";
+import { verifyWindowsGhidraByteSearch } from "./lib/ghidra-windows-byte-search.mjs";
 
 const verifierRun = createVerifierRun();
 const SESSION_CAPABILITIES = GHIDRA_SESSION_CAPABILITIES.filter(
@@ -45,6 +49,7 @@ if (
 )
   throw new Error("Windows Ghidra must not advertise database mutation");
 const installDir = process.env.GHIDRA_INSTALL_DIR;
+const { clientOptions } = resolveGhidraVerifierTimeouts(process.env);
 if (installDir === undefined || !isAbsolute(installDir))
   throw new Error(
     "Set GHIDRA_INSTALL_DIR to the absolute root of Ghidra 12.1.4.",
@@ -114,6 +119,7 @@ const client = new GhidraClient({
   transport: "authenticated-loopback-tcp",
   providerVersion: SUPPORTED_GHIDRA_VERSION,
   profileDigest: profile.value.profile.digest,
+  ...clientOptions,
 });
 
 let coordinates;
@@ -214,6 +220,11 @@ try {
   });
   await inventory("search_procedures", { pattern: procedure.value });
   await inventory("search_strings", { pattern: "rea" });
+  const byteSearch = await verifyWindowsGhidraByteSearch({
+    invoke: inventory,
+    sourceBytes,
+    architecture,
+  });
 
   for (const operation of [
     "procedure_assembly",
@@ -241,12 +252,18 @@ try {
     ...GHIDRA_INVENTORY_OPERATIONS,
     ...GHIDRA_FUNCTION_OPERATIONS,
   ].filter((name) => !GHIDRA_MUTATING_OPERATIONS.has(name));
+  const expectedOperations = new Set(expected);
+  const missingOperations = expected.filter((name) => !observed.has(name));
+  const unexpectedOperations = [...observed].filter(
+    (name) => !expectedOperations.has(name),
+  );
   if (
-    observed.size !== expected.length ||
-    expected.some((operation) => !observed.has(operation))
+    missingOperations.length > 0 ||
+    unexpectedOperations.length > 0 ||
+    observed.size !== expectedOperations.size
   )
     throw new Error(
-      `Windows Ghidra operation proof was incomplete: ${JSON.stringify([...observed])}`,
+      `Windows Ghidra operation proof was incomplete: ${JSON.stringify({ missing: missingOperations, unexpected: unexpectedOperations })}`,
     );
 
   // The reference controls occupy the EXE fixture's additional function.
@@ -257,6 +274,10 @@ try {
         functionOperation,
         architecture === "x86",
       );
+  const borlandSeh =
+    architecture === "x86" && !dllFixture
+      ? await verifyGhidraBorlandSeh(functionObservationOperation, true)
+      : null;
   report = {
     ok: true,
     provider: { id: "ghidra", version: SUPPORTED_GHIDRA_VERSION },
@@ -270,8 +291,10 @@ try {
     },
     transport: "authenticated-loopback-tcp",
     operations: [...observed].sort((left, right) => left.localeCompare(right)),
+    byte_search: byteSearch,
     cleanup: "complete",
     compact_references: compactReferences,
+    borland_seh: borlandSeh,
     native_controls: {
       job_object: true,
       protected_dacl: true,
@@ -300,6 +323,11 @@ try {
 }
 if (report === undefined)
   throw new Error("Windows Ghidra report was not produced");
+report.file_offsets = await verifyGhidraFileOffsets(
+  targetPath,
+  resolve(root, "scripts", "rea.mjs"),
+  architecture === "x86" ? "0x401010" : "0x140001010",
+);
 process.stdout.write(
   `${JSON.stringify({ verifier_run: await completeVerifierRun(verifierRun), ...report })}\n`,
 );
@@ -316,6 +344,11 @@ async function inventory(operation, parameters) {
 }
 
 async function functionOperation(operation, parameters) {
+  const observation = await functionObservationOperation(operation, parameters);
+  return observation.value;
+}
+
+async function functionObservationOperation(operation, parameters) {
   const input = parseGhidraFunctionInput(operation, parameters);
   if (!input.ok) throw input.error;
   const called = await client.callTool(operation, input.value);
@@ -323,7 +356,7 @@ async function functionOperation(operation, parameters) {
   const result = parseGhidraFunctionResult(operation, called.value);
   if (!result.ok) throw result.error;
   observed.add(operation);
-  return result.value.value;
+  return result.value;
 }
 
 function assertSession(session, targetSha256, profileDigest) {

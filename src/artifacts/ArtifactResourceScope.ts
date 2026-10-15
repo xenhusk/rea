@@ -8,8 +8,13 @@ import { ArtifactReaderFailure } from "./ArtifactReader.js";
 import type { SafeOutputTree } from "./SafeOutputTree.js";
 import type { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 
-/** One artifact resource and its format-specific cleanup owner. */
+/** One artifact resource and the capability that owns its cleanup. */
 export type ArtifactResourceOwner =
+  | {
+      readonly kind: "lease";
+      readonly resource: string;
+      readonly lease: { release(): Promise<void> };
+    }
   | {
       readonly kind: "javascript-source-analysis";
       readonly resource: string;
@@ -56,6 +61,10 @@ export class ArtifactResourceScope {
   readonly #active = new Set<Promise<unknown>>();
   #draining: Promise<void> | undefined;
   #closed = false;
+
+  get hasPending(): boolean {
+    return this.#pending.size > 0;
+  }
 
   /** Admit a resource operation while the scope remains open. */
   async run<T>(operation: () => Promise<T>): Promise<T> {
@@ -152,6 +161,9 @@ export class ArtifactResourceScope {
 
 const cleanup = async (owner: ArtifactResourceOwner): Promise<void> => {
   switch (owner.kind) {
+    case "lease":
+      await owner.lease.release();
+      return;
     case "javascript-source-analysis":
       await owner.analysis.close();
       return;

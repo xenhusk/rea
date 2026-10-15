@@ -25,6 +25,7 @@ import {
   inspectRouteProperty,
   inspectRoleProperty,
   inspectRpcNode,
+  indexVitePreloadDependencyTable,
 } from "./javascriptStaticAnalysisCalls.js";
 import {
   inspectBundlerRegistration,
@@ -41,10 +42,7 @@ import type { JavaScriptStaticAnalysis } from "./javascriptStaticAnalysisTypes.j
 import type { JavaScriptSemanticAnalysisState } from "./javascriptSemanticState.js";
 import {
   indexJavaScriptElectronIdentitySteps,
-  indexJavaScriptBindingsSteps,
-  classifyParsedJavaScriptRpcClientRootsSteps,
-  classifyParsedJavaScriptOpenReceivers,
-  type JavaScriptOpenReceiverFact,
+  indexJavaScriptBindingsWithReceiversSteps,
 } from "./javascriptSemanticAnalysis.js";
 import {
   parseJavaScriptSource,
@@ -53,6 +51,11 @@ import {
 
 import { createJavaScriptRpcScan } from "./javascriptRpcEndpoints.js";
 import { semanticImportEqualsSpecifier } from "./javascriptSemanticProjection.js";
+import {
+  hasUncertainTypeOnlyModuleSideEffect,
+  isTypeOnlyExportDeclaration,
+  isTypeOnlyImportDeclaration,
+} from "./javascriptModuleDeclaration.js";
 
 /** Parse one JavaScript artifact and recover static structure only. */
 export const analyzeJavaScriptStaticSource = (
@@ -61,44 +64,38 @@ export const analyzeJavaScriptStaticSource = (
   const file = parseJavaScriptSource(source);
   return file === null
     ? failedJavaScriptStaticAnalysis()
-    : analyzeParsedJavaScriptStaticSource(
-        source,
-        file,
-        classifyParsedJavaScriptOpenReceivers(file),
-      );
+    : analyzeParsedJavaScriptStaticSource(source, file);
 };
 
 /** Recover static structure from an already parsed JavaScript artifact. */
 export const analyzeParsedJavaScriptStaticSource = (
   source: string,
   file: ParsedJavaScriptSource,
-  openReceiverFacts?: ReadonlyMap<number, JavaScriptOpenReceiverFact>,
 ): JavaScriptStaticAnalysis =>
-  completeSemanticSteps(
-    analyzeParsedJavaScriptStaticSourceSteps(source, file, openReceiverFacts),
-  );
+  completeSemanticSteps(analyzeParsedJavaScriptStaticSourceSteps(source, file));
 
 /** Static analysis that yields during its source traversal; results are unchanged. */
 export function* analyzeParsedJavaScriptStaticSourceSteps(
   source: string,
   file: ParsedJavaScriptSource,
-  openReceiverFacts?: ReadonlyMap<number, JavaScriptOpenReceiverFact>,
 ): Generator<void, JavaScriptStaticAnalysis> {
   const accumulator = createJavaScriptAnalysisAccumulator(source.length);
-  const bindings = yield* indexJavaScriptBindingsSteps(file.program);
+  // One definitions pass serves receiver classification and binding lookup.
+  const { bindings, receivers } =
+    yield* indexJavaScriptBindingsWithReceiversSteps(file.program);
   const electronIdentity = yield* indexJavaScriptElectronIdentitySteps(
     file.program,
     bindings,
   );
-  const clientRoots = yield* classifyParsedJavaScriptRpcClientRootsSteps(file);
   yield* traverseStaticSourceSteps(
     file,
     {
       source,
       accumulator,
-      ...(openReceiverFacts === undefined ? {} : { openReceiverFacts }),
+      vitePreloadDependencyTable: indexVitePreloadDependencyTable(file.program),
+      openReceiverFacts: receivers.openReceivers,
       electronBindings: electronIdentity.bindings,
-      rpcScan: createJavaScriptRpcScan(source, clientRoots),
+      rpcScan: createJavaScriptRpcScan(source, receivers.rpcClientRoots),
     },
     bindings,
   );
@@ -154,6 +151,11 @@ const finalizeStaticAnalysis = (
       : [
           "One or more static keys, expressions, or Electron boundary values were dynamic and remain unknown.",
         ]),
+    ...(hasUncertainTypeOnlyModuleSideEffect(file.program)
+      ? [
+          "Compiler options are unavailable; inline type-only imports or re-exports may preserve a module side-effect dependency.",
+        ]
+      : []),
     ...(accumulator.references.some(
       ({ value }) =>
         value.specifier !== null && ELECTRON_MODULE.test(value.specifier),
@@ -246,14 +248,20 @@ const inspectNode = (
       addReference(findings, { node, kind: "require", specifier });
   } else if (
     (t.isImportDeclaration(node) || t.isExportAllDeclaration(node)) &&
-    node.source !== undefined
+    node.source !== undefined &&
+    !(t.isImportDeclaration(node) && isTypeOnlyImportDeclaration(node)) &&
+    !(t.isExportAllDeclaration(node) && isTypeOnlyExportDeclaration(node))
   )
     addReference(findings, {
       node,
       kind: "static-import",
       specifier: node.source.value,
     });
-  else if (t.isExportNamedDeclaration(node) && node.source != null)
+  else if (
+    t.isExportNamedDeclaration(node) &&
+    node.source != null &&
+    !isTypeOnlyExportDeclaration(node)
+  )
     addReference(findings, {
       node,
       kind: "static-import",

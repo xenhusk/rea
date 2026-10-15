@@ -30,6 +30,25 @@ const packageNameSchema = z
     "Package name must be dot-separated Java identifiers",
   );
 
+/** Text states emitted by adb's ConnectionState formatter. */
+export const ADB_DEVICE_STATES = [
+  "no permissions",
+  "unauthorized",
+  "authorizing",
+  "offline",
+  "recovery",
+  "sideload",
+  "connecting",
+  "bootloader",
+  "device",
+  "unknown",
+  "host",
+  "rescue",
+  "detached",
+] as const;
+export const adbDeviceStateSchema = z.enum(ADB_DEVICE_STATES);
+export type AdbDeviceState = (typeof ADB_DEVICE_STATES)[number];
+
 const keyStringSchema = z.string().min(1).max(256);
 const keyPattern = /^[A-Za-z0-9._\x2d]+$/u;
 
@@ -215,7 +234,7 @@ export const adbInputSchemas = {
       .boolean()
       .default(false)
       .describe(
-        "Replace an existing installation and keep its data (adb install -r)",
+        "Request replacement mode and keep existing app data if present (adb install -r); does not establish whether the app was already installed",
       ),
   }),
   uninstall_adb_package: z.strictObject({
@@ -412,7 +431,7 @@ const client = z.strictObject({
 
 const device = z.strictObject({
   serial: z.string().min(1),
-  state: z.string().min(1),
+  state: adbDeviceStateSchema,
   transport: z.enum(["usb", "tcp", "unknown"]),
   product: z.string().nullable(),
   model: z.string().nullable(),
@@ -508,7 +527,13 @@ export const adbResultSchemas = {
     serial: z.string().min(1),
     package_name: packageNameSchema,
     version_name: z.string().nullable(),
-    version_code: z.number().int().nullable(),
+    version_code: z
+      .string()
+      .regex(/^-?\d+$/u)
+      .nullable()
+      .describe(
+        "Long version code exactly as dumpsys package prints it; may exceed the JSON safe-integer range",
+      ),
     first_install_time: z.string().nullable(),
     last_update_time: z.string().nullable(),
     installer_package_name: z.string().nullable(),
@@ -666,7 +691,8 @@ export const adbResultSchemas = {
     apk_path: z.string().min(1),
     bytes: z.number().int().nonnegative(),
     sha256: z.string().regex(/^[a-f0-9]{64}$/u),
-    replaced: z.boolean(),
+    replace_requested: z.boolean(),
+    replaced: z.boolean().nullable(),
   }),
   uninstall_adb_package: z.strictObject({
     client,
