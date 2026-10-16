@@ -59,10 +59,12 @@ Hopper installation or any file write. Declining or pressing Ctrl-C makes no
 changes. Agent configuration writes preserve unrelated entries and comments,
 create backups, use atomic replacement, and verify their result. Setup and
 uninstall retain an existing `.rea.backup` rather than replacing the first snapshot.
-If that snapshot differs from the current configuration, setup previews and
-preserves a verified `.rea.backup.<sha256>.recovery` copy of the current bytes.
-Both snapshots remain available; a failed rollback reports the current recovery
-copy's path and the restore failure.
+If that snapshot differs from the current configuration, setup and uninstall
+preserve a verified `.rea.backup.<sha256>.recovery` copy of the current bytes
+before editing; setup also previews it. Both snapshots remain available.
+When an edit made a backup, a failed uninstall update or restore, and a failed
+setup readback or rollback, name the backup path that holds the bytes from just
+before that edit.
 Setup also retains valid environment overrides in REA's existing server entry,
 such as `REA_MCP_INPUT_SCHEMA_PROFILE`, `REA_MCP_OUTPUT_SCHEMA_PROFILE`, and
 `REA_MCP_MAX_RESPONSE_BYTES`.
@@ -921,6 +923,9 @@ bridge, and health readiness. Large binaries can need more: set
 `REA_GHIDRA_STARTUP_TIMEOUT_MS` to an integer between 1 and 2,147,483,647
 milliseconds in the server environment. An absent setting uses the default;
 empty, invalid or out-of-range supplied values fail configuration validation.
+When the deadline elapses, the `provider_timeout` error names
+`REA_GHIDRA_STARTUP_TIMEOUT_MS` with the deadline that was applied and suggests
+`REA_GHIDRA_DISABLED_ANALYZERS` for analyzers that dominate the time.
 REA parses the supplied configuration environment and
 passes the deadline to each provider client; a startup failure is returned by the query that triggered it,
 without exposing partial analysis. This deadline is separate from MCP transport
