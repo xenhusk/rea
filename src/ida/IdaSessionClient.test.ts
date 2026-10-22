@@ -7,9 +7,16 @@ import {
   RecordingIdaMcp,
 } from "../../tests/fixtures/idaMcp.js";
 import { IdaSessionClient } from "./IdaSessionClient.js";
+import {
+  DEFAULT_REGEX_MATCHING_DEADLINE,
+  REGEX_MATCHING_DEADLINE_SETTING,
+} from "../config/regexMatchingDeadline.js";
 import { functionDossierSchema } from "../domain/hopperValues.js";
 import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
-import { AnalysisProtocolError } from "../domain/analysisErrorCore.js";
+import {
+  AnalysisProtocolError,
+  AnalysisResourceConstraintError,
+} from "../domain/analysisErrorCore.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { WindowsPrivateRuntime } from "../windows/WindowsPrivateRuntime.js";
@@ -573,16 +580,31 @@ describe("attached IDA regex supervision", () => {
         mode: "regex",
       });
       expect(result.ok).toBe(false);
-      if (!result.ok)
-        expect(result.error._tag).toBe("AnalysisResourceConstraintError");
+      if (
+        result.ok ||
+        !(result.error instanceof AnalysisResourceConstraintError)
+      )
+        throw new Error("Expected a supervised regex deadline");
+      expect(result.error).toMatchObject({
+        operation: "search_strings",
+        resource: "cpu",
+        reportedLimits: {
+          matching_deadline_ms: DEFAULT_REGEX_MATCHING_DEADLINE.deadlineMs,
+          matching_deadline_source: DEFAULT_REGEX_MATCHING_DEADLINE.source,
+        },
+      });
+      expect(result.error.message).toContain(REGEX_MATCHING_DEADLINE_SETTING);
       const recovered = await client.execute("search_strings", {
         pattern: "!$",
         mode: "regex",
       });
-      expect(recovered.ok && recovered.value.result).toHaveLength(1);
-      expect(recovered.ok && recovered.value.limitations).toContain(
-        "Regex mode uses ECMAScript Unicode semantics in a cancellable worker with a 5-second matching deadline; matching failure leaves the service available.",
-      );
+      expect(recovered.ok && recovered.value.result).toEqual([
+        expect.objectContaining({ address: "0x3000", value }),
+      ]);
+      if (recovered.ok)
+        expect(recovered.value.limitations.join("\n")).toContain(
+          REGEX_MATCHING_DEADLINE_SETTING,
+        );
     } finally {
       await client.close();
     }
@@ -1134,6 +1156,100 @@ describe("headless IDA session ownership and cleanup", () => {
         input_path: producer.inputPath,
       }),
     );
+    expect(
+      (await readdir(root)).some((name) => name.startsWith("rea-ida-")),
+    ).toBe(true);
+  });
+});
+
+describe("headless IDA blanked-identity inventory rows", () => {
+  it("releases cleanly when the closed worker lingers in inventory without an identity", async () => {
+    const { producer, client, root } = await fixture("headless");
+    expect((await client.execute("health", {})).ok).toBe(true);
+    let released = false;
+    producer.beforeCall = async (name) => {
+      if (name === "idb_close") released = true;
+    };
+    // A worker observed mid-teardown: identity cleared, private input retained.
+    producer.overrideCall = (name) =>
+      name === "idb_list" && released
+        ? {
+            sessions: [
+              {
+                session_id: "",
+                input_path: producer.inputPath,
+                owned: false,
+                backend: "worker",
+                is_active: false,
+              },
+            ],
+            count: 1,
+          }
+        : undefined;
+
+    expect((await client.close()).ok).toBe(true);
+    expect(await readdir(root)).toEqual(["target.elf"]);
+  });
+
+  it("still reports a same-input gui row whose identity is blank", async () => {
+    const { producer, client, root } = await fixture("headless");
+    expect((await client.execute("health", {})).ok).toBe(true);
+    let released = false;
+    producer.beforeCall = async (name) => {
+      if (name === "idb_close") released = true;
+    };
+    // A gui binding belongs to an IDA instance REA does not control, so the
+    // blanked-identity exception must not reach it.
+    producer.overrideCall = (name) =>
+      name === "idb_list" && released
+        ? {
+            sessions: [
+              {
+                session_id: "",
+                input_path: producer.inputPath,
+                owned: false,
+                backend: "gui",
+                is_active: false,
+              },
+            ],
+            count: 1,
+          }
+        : undefined;
+
+    const result = await client.close();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.cleanupIncomplete).toBe(true);
+    expect(
+      (await readdir(root)).some((name) => name.startsWith("rea-ida-")),
+    ).toBe(true);
+  });
+
+  it("still reports a same-input peer that keeps a session identity", async () => {
+    const { producer, client, root } = await fixture("headless");
+    expect((await client.execute("health", {})).ok).toBe(true);
+    let released = false;
+    producer.beforeCall = async (name) => {
+      if (name === "idb_close") released = true;
+    };
+    producer.overrideCall = (name) =>
+      name === "idb_list" && released
+        ? {
+            sessions: [
+              {
+                session_id: "unrelated-live-peer",
+                input_path: producer.inputPath,
+                owned: false,
+                backend: "worker",
+                is_active: false,
+              },
+            ],
+            count: 1,
+          }
+        : undefined;
+
+    const result = await client.close();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.cleanupIncomplete).toBe(true);
     expect(
       (await readdir(root)).some((name) => name.startsWith("rea-ida-")),
     ).toBe(true);
