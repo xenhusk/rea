@@ -1,3 +1,4 @@
+import { STATE_INTAKE_LIMIT_BYTES } from "../../application/environment/environmentStateDocument.js";
 import {
   DEFAULT_MAX_REQUEST_BODY_SIZE,
   fromJsonSchema,
@@ -47,7 +48,6 @@ import {
   DEFAULT_STATE_INTAKE,
   exactJsonReviver,
   SERVER_ERROR,
-  STATE_INTAKE_LIMIT_BYTES,
   type RpcError,
   type StateFetcher,
 } from "./stateIntake.js";
@@ -115,6 +115,7 @@ export const createEnvironmentMcpServer = (
       {
         description: definition.description,
         inputSchema: fromJsonSchema<ReplayArguments>(definition.inputSchema),
+        annotations: definition.annotations,
       },
       (args): CallToolResult => {
         const replayed = answer(definition.tool, args);
