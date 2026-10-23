@@ -12,6 +12,7 @@ import {
   AnalysisCancelledError,
   AnalysisUnsupportedTargetError,
 } from "../domain/analysisErrorCore.js";
+import { ConfigurationError } from "../domain/configurationErrors.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
 import { err, ok, type Result } from "../domain/result.js";
@@ -45,10 +46,22 @@ import {
   NATIVE_AOT_PROFILE_CONTRACT_REVISION,
 } from "../domain/native/nativeAotPe.js";
 
-const callRelationshipCoverage = "function-body-call-coverage-v5";
-const functionBoundaryObservations = "ghidra-function-boundary-limitations-v4";
-const instructionReferenceCoverage =
-  "exact-address-incoming-without-synthetic-entry-v2";
+/** Shared analysis commitments for raw and header-selected imports. */
+const sharedAnalysisSemantics = {
+  annotation_policy: "atomic-function-entry-metadata-v1",
+  load_image_observations: "source-mappings-entry-context-v2",
+  function_body_evidence: "complete-inclusive-ranges-v1",
+  function_references: "complete-body-and-entry-reference-manager-v2",
+  call_relationship_coverage: "function-body-call-coverage-v5",
+  function_dossier_coverage: "observed-facets-and-call-relationships-v1",
+  string_inventory_evidence: "defined-data-coverage-v1",
+  location_resolution: "explicit-address-exact-entry-symbol-first-v3",
+  procedure_file_offset_resolution:
+    "address-first-unique-target-source-mapping-v2",
+  instruction_flow_evidence: "decoded-return-pcode-v1",
+  instruction_references: "exact-address-incoming-without-synthetic-entry-v2",
+  function_boundary_observations: "ghidra-function-boundary-limitations-v4",
+} as const;
 
 /**
  * The processor language REA pins for this target, or undefined when Ghidra may
@@ -61,6 +74,24 @@ export const ghidraPinnedLanguage = (
   ghidraMipsLanguageOverride(target) ??
   ghidraRiscvLanguageOverride(target) ??
   ghidraPowerPcLanguage(target);
+
+/** Policy conflicts belong to the selected settings, not to the target's support. */
+const languageOverrideConflict = (
+  override: GhidraLanguageOverride,
+  constraint: string,
+  pinned?: GhidraLanguageOverride,
+): ConfigurationError =>
+  new ConfigurationError(constraint, {
+    settings: [
+      ...(pinned?.languageId === override.languageId
+        ? []
+        : [{ setting: "REA_GHIDRA_LANGUAGE_ID", constraint }]),
+      ...(override.compilerSpecId === undefined ||
+      pinned?.compilerSpecId === override.compilerSpecId
+        ? []
+        : [{ setting: "REA_GHIDRA_COMPILER_SPEC_ID", constraint }]),
+    ],
+  });
 
 /** Resolve version-bound, deterministic semantics before Ghidra imports a target. */
 export const resolveGhidraAnalysisProfile = async (
@@ -96,10 +127,9 @@ export const resolveGhidraAnalysisProfile = async (
   // A caller-selected generic processor cannot override this verified PSP loader.
   if (isGhidraPspTarget(target) && languageOverride !== undefined)
     return err(
-      new AnalysisUnsupportedTargetError(
-        "resolve_analysis_profile",
-        target.path,
-        "The bounded PSP Allegrex profile does not accept REA_GHIDRA_LANGUAGE_ID overrides.",
+      languageOverrideConflict(
+        languageOverride,
+        "The bounded PSP Allegrex profile does not accept processor or compiler specification overrides.",
       ),
     );
   const pspExtension = isGhidraPspTarget(target)
@@ -120,10 +150,9 @@ export const resolveGhidraAnalysisProfile = async (
     if (languageOverride !== undefined)
       return Promise.resolve(
         err(
-          new AnalysisUnsupportedTargetError(
-            "resolve_analysis_profile",
-            target.path,
-            "REA_GHIDRA_LANGUAGE_ID cannot override the admitted raw-binary import.",
+          languageOverrideConflict(
+            languageOverride,
+            "Processor or compiler specification overrides cannot replace the admitted raw-binary import.",
           ),
         ),
       );
@@ -136,20 +165,7 @@ export const resolveGhidraAnalysisProfile = async (
           architecture: target.architecture,
           available_architectures: [...target.availableArchitectures].sort(),
           import_mode: "ephemeral-source-immutable",
-          annotation_policy: "atomic-function-entry-metadata-v1",
-          load_image_observations: "source-mappings-entry-context-v2",
-          function_body_evidence: "complete-inclusive-ranges-v1",
-          function_references: "complete-body-and-entry-reference-manager-v2",
-          call_relationship_coverage: callRelationshipCoverage,
-          function_dossier_coverage:
-            "observed-facets-and-call-relationships-v1",
-          string_inventory_evidence: "defined-data-coverage-v1",
-          location_resolution: "explicit-address-exact-entry-symbol-first-v3",
-          procedure_file_offset_resolution:
-            "address-first-unique-target-source-mapping-v2",
-          instruction_flow_evidence: "decoded-return-pcode-v1",
-          instruction_references: instructionReferenceCoverage,
-          function_boundary_observations: functionBoundaryObservations,
+          ...sharedAnalysisSemantics,
           no_return_repair:
             installation.platform === "win32"
               ? "disabled-windows-p0"
@@ -188,14 +204,14 @@ export const resolveGhidraAnalysisProfile = async (
         languageOverride.compilerSpecId !== pinnedLanguage.compilerSpecId))
   )
     return err(
-      new AnalysisUnsupportedTargetError(
-        "resolve_analysis_profile",
-        target.path,
+      languageOverrideConflict(
+        languageOverride,
         `The caller-selected processor or compiler specification is outside the verified ${
           target.architecture === "riscv"
             ? "generic little-endian RISC-V"
             : "endian-matched MIPS32"
         } profile. The requested override has not been changed.`,
+        pinnedLanguage,
       ),
     );
   const selectedLanguage = languageOverride ?? pinnedLanguage;
@@ -203,10 +219,9 @@ export const resolveGhidraAnalysisProfile = async (
   if (dos && languageOverride !== undefined)
     return Promise.resolve(
       err(
-        new AnalysisUnsupportedTargetError(
-          "resolve_analysis_profile",
-          target.path,
-          "REA_GHIDRA_LANGUAGE_ID cannot override the admitted DOS real-mode import.",
+        languageOverrideConflict(
+          languageOverride,
+          "Processor or compiler specification overrides cannot replace the admitted DOS real-mode import.",
         ),
       ),
     );
@@ -247,19 +262,7 @@ export const resolveGhidraAnalysisProfile = async (
               windows_arm_pe_machine: target.peMachine ?? null,
             }
           : {}),
-        annotation_policy: "atomic-function-entry-metadata-v1",
-        load_image_observations: "source-mappings-entry-context-v2",
-        function_body_evidence: "complete-inclusive-ranges-v1",
-        function_references: "complete-body-and-entry-reference-manager-v2",
-        call_relationship_coverage: callRelationshipCoverage,
-        function_dossier_coverage: "observed-facets-and-call-relationships-v1",
-        string_inventory_evidence: "defined-data-coverage-v1",
-        location_resolution: "explicit-address-exact-entry-symbol-first-v3",
-        procedure_file_offset_resolution:
-          "address-first-unique-target-source-mapping-v2",
-        instruction_flow_evidence: "decoded-return-pcode-v1",
-        instruction_references: instructionReferenceCoverage,
-        function_boundary_observations: functionBoundaryObservations,
+        ...sharedAnalysisSemantics,
         no_return_repair:
           installation.platform === "win32"
             ? "disabled-windows-p0"
