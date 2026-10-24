@@ -236,6 +236,16 @@ Formats 2, 3 and 4 retain header, directory and integrity facts. Compact deliver
 keeps complete Evidence in the requested bundle. See [Godot PCK](godot-pck.md)
 for embedded packs, batch queries and unknown encrypted coverage.
 
+Inspect a Node.js SEA carrier without running it:
+
+```sh
+rea inspect-artifact ./application --json
+rea extract-artifact ./application --json
+```
+
+See [Node.js SEA](node-sea.md) for supported layouts, script and asset paths,
+fuse observations, and the real-fixture verification lane.
+
 Inspect local model declarations without loading weights:
 
 ```bash
@@ -1042,6 +1052,18 @@ Counting retains the existing bounded formatted-string allocation after capacity
 admission; omit the flag to stream large JSON documents without materializing
 the complete formatted text. Exhausted token windows display an empty range at
 the total token count and have no next offset.
+
+### `inspect-devicetree`
+
+Inspect an explicit local FDT v16/v17 blob without execution or an external tool.
+Returns header, reservations, node/property tree, derived standard values and
+selected phandle references. See [devicetree inspection](devicetree.md) for
+limits and retained-view pagination.
+
+```bash
+rea inspect-devicetree /artifacts/board.dtb --json
+rea inspect-devicetree /artifacts/board.dtb --detail summary --evidence_output /artifacts/board-evidence.json --json
+```
 
 ### PE TLS and load configuration
 
